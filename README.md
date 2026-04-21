@@ -1,5 +1,9 @@
 # Short-Term Stock Picker (短线强势股筛选工具)
 
+[![GitHub stars](https://img.shields.io/github/stars/online0001/skills?style=social)](https://github.com/online0001/skills)
+[![Python](https://img.shields.io/badge/Python-3.7+-blue.svg)](https://www.python.org/)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+
 [English](#english) | [中文](#中文)
 
 ---
@@ -8,7 +12,15 @@
 
 ### Overview
 
-`short-term-stock-picker` is a quantitative screening tool for A-share market短线强势股 (short-term strong stocks). It identifies stocks with high short-term momentum by combining technical analysis and capital flow indicators.
+`short-term-stock-picker` is a **quantitative stock screening tool** designed for **A-share market** (Chinese stock market). Also known as: **短线选股器**, **强势股筛选工具**, **量化选股**, **涨停板选股**, **技术面选股**.
+
+This tool identifies **short-term strong stocks (短线强势股)** with high momentum by combining:
+- **Technical analysis** - MA5/10/20 alignment, golden cross patterns
+- **Limit-up history** - Stocks with recent limit-up days
+- **Volume analysis** - Momentum indicators
+- **Capital flow** - Fund flow estimation
+
+Perfect for: **短线交易**, **涨停板策略**, **强势股操作**, **技术分析选股**, **量化投资**, **A股打板**, **股票筛选**, **沪深股市分析**.
 
 ### Features
 
@@ -94,7 +106,14 @@ This tool is for educational and research purposes only. Stock trading involves 
 
 ### 简介
 
-`short-term-stock-picker`（短线强势股筛选工具）是一款基于技术面和资金面的A股量化筛选工具。通过综合分析涨停历史、均线系统、成交量变化等多维度指标，筛选出具有短期强势特征的股票。
+`short-term-stock-picker`（短线强势股筛选工具）是一款面向 **A股市场** 的 **量化选股工具**，支持：
+- **短线选股**、**强势股筛选**、**涨停板选股**
+- **技术面分析**、**量化交易策略**、**A股打板分析**
+- **均线系统**、**量价配合分析**、**资金流向研究**
+
+通过综合分析 **涨停历史**、**均线多头排列**、**成交量放量**、**换手率** 等多维度指标，筛选出具有 **短期强势特征** 的股票。
+
+**适用场景**：短线交易、追涨停板、强势股操作、技术分析、量化选股、股票池筛选、热点板块追踪、资金流向分析、东方财富数据研究。
 
 ### 核心特性
 
