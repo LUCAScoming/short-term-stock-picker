@@ -14,7 +14,7 @@
 
 `short-term-stock-picker` is a **professional quantitative stock screening tool** designed for **A-share market** (Chinese stock market / 沪深股市 / A股).
 
-Also known as: **短线选股器**, **强势股筛选工具**, **量化选股**, **涨停板选股**, **技术面选股**, **短线交易策略**, **A股打板工具**.
+Also known as / Related Searches: **股票分析skill**, **股票数据源skill**, **A股选股skill**, **量化投资skill**, **短线交易skill**, **强势股筛选skill**, **涨停板分析skill**, **技术面选股skill**, **均线策略skill**, **量化选股skill**, **股票筛选skill工具**, **A股数据skill**, **短线选股器**, **强势股筛选工具**, **量化选股**, **涨停板选股**, **技术面选股**, **短线交易策略**, **A股打板工具**.
 
 ### What It Does
 
@@ -113,6 +113,9 @@ This tool is for **educational and research purposes only**. Stock trading invol
 
 `short-term-stock-picker`（短线强势股筛选工具）是一款面向 **A股市场** 的 **专业量化选股工具**，支持：
 
+- **股票分析skill**、**股票数据源skill**、**A股选股skill**、**量化投资skill**
+- **短线交易skill**、**强势股筛选skill**、**涨停板分析skill**、**技术面选股skill**
+- **均线策略skill**、**量化选股skill**、**股票筛选skill工具**、**A股数据skill**
 - **短线选股**、**强势股筛选**、**涨停板选股**、**技术面选股**
 - **量化交易策略**、**A股打板分析**、**资金流向研究**
 - **均线系统分析**、**量价配合分析**、**趋势健康度评估**
