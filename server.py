@@ -320,7 +320,7 @@ body{
   text-overflow:ellipsis;
 }
 
-#history-list{list-style:none;}
+#history-list{list-style:none;max-height:190px;overflow-y:auto;}
 #history-list li{
   padding:10px 12px;
   border-radius:6px;

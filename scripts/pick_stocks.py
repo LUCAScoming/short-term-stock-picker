@@ -75,39 +75,66 @@ def get_trade_dates(n=25):
     return dates
 
 def get_all_limit_up_stocks(trade_dates):
-    """获取近20日涨停股"""
+    """获取近20日涨停股，同时计算首板距今天数、连板天数"""
     all_data = {}
-    
+    recent20 = trade_dates[:20]
+
     print(f"📊 检查近20个交易日涨停情况...")
-    
-    for i, date in enumerate(trade_dates[:20]):
+
+    for i, date in enumerate(recent20):
         try:
             df = ak.stock_zt_pool_em(date=date)
             if df is not None and len(df) > 0:
                 for _, row in df.iterrows():
                     code = str(row['代码']).zfill(6)
                     name = row['名称']
-                    
+
                     if code not in all_data:
                         all_data[code] = {
                             'name': name,
                             'count': 0,
+                            'dates': [],
                         }
-                    
+
                     all_data[code]['count'] += 1
-                    
+                    all_data[code]['dates'].append(date)
+
                     if all_data[code]['count'] == 1:
                         circ_mv = row.get('流通市值', 0)
                         total_mv = row.get('总市值', 0)
                         all_data[code]['market_cap'] = circ_mv if circ_mv > 0 else total_mv
                         all_data[code]['industry'] = row.get('所属行业', '')
-            
+
             if (i + 1) % 5 == 0:
                 print(f"  已检查 {i+1}/20 个交易日... 累计 {len(all_data)} 只")
             time.sleep(0.2)
-        except Exception as e:
+        except Exception:
             continue
-    
+
+    # 计算每只股票的首次涨停距今天数 & 连板天数
+    for code, info in all_data.items():
+        dates_set = set(info['dates'])
+
+        # 首次涨停距今天数（recent20[0]=最近, recent20[19]=最早）
+        earliest = min(dates_set)
+        info['first_days_ago'] = recent20.index(earliest)
+
+        # 连板天数：从最近一个涨停日往前数连续天数
+        consecutive = 0
+        most_recent = None
+        for d in recent20:
+            if d in dates_set:
+                most_recent = d
+                break
+        if most_recent:
+            start = recent20.index(most_recent)
+            for j in range(start, min(start + 10, 20)):
+                if recent20[j] in dates_set:
+                    consecutive += 1
+                else:
+                    break
+        info['consecutive'] = consecutive
+
     print(f"📈 近20日共有 {len(all_data)} 只股票涨停过")
     return all_data
 
@@ -181,8 +208,22 @@ def analyze_stock(code, info):
     # 3日涨跌幅
     recent3 = df_hist.tail(3)
     change_3d = (recent3.iloc[-1]['close'] - recent3.iloc[0]['close']) / recent3.iloc[0]['close'] * 100
-    
-    # 技术评分
+
+    # 20日涨跌幅（过热检测）
+    if len(df_hist) >= 20:
+        change_20d = (df_hist.iloc[-1]['close'] - df_hist.iloc[0]['close']) / df_hist.iloc[0]['close'] * 100
+    else:
+        change_20d = change_3d
+    # 20日涨幅 > 35% 追高风险，直接排除
+    if change_20d > 35:
+        return None
+
+    # ---- 评分计算 ----
+    limit_up_count = info['count']
+    first_days_ago = info.get('first_days_ago', 10)
+    consecutive = info.get('consecutive', 0)
+
+    # 技术评分（不变）
     tech_score = 20 + 10  # 均线多头基础分
     if vol_ratio >= 1.5:
         tech_score += 15
@@ -190,22 +231,43 @@ def analyze_stock(code, info):
         tech_score += 10
     else:
         tech_score += 5
-    
+
     if change_3d > 0 and vol_ratio >= 1.2:
         tech_score += 10
-    
+
     if 2 <= turnover_rate <= 8:
         tech_score += 5
-    
-    limit_up_count = info['count']
-    total_score = limit_up_count * 20 + tech_score + vol_ratio * 5
-    
+
+    # 首板新鲜度加分
+    recency_bonus = 0
+    if first_days_ago <= 3:
+        recency_bonus = 15
+    elif first_days_ago <= 7:
+        recency_bonus = 8
+
+    # 连板加分
+    consecutive_bonus = max(0, (consecutive - 1)) * 10
+
+    # 过热惩罚（20日涨幅 25%-35% 之间）
+    overheat_penalty = -10 if change_20d > 25 else 0
+
+    # 综合评分：涨停权重降为10，量比权重翻倍
+    total_score = (limit_up_count * 10
+                   + tech_score
+                   + vol_ratio * 10
+                   + recency_bonus
+                   + consecutive_bonus
+                   + overheat_penalty)
+
     board = '科创板' if code.startswith('688') else ('创业板' if code.startswith('300') else ('深交所' if code.startswith(('000', '001')) else '上交所'))
-    
+
     return {
         '代码': code,
         '名称': name,
+        '综合评分': round(total_score, 1),
         '涨停次数(近20日)': limit_up_count,
+        '连板天数': consecutive,
+        '首次涨停距今(天)': first_days_ago,
         '流通市值(亿)': round(market_cap / 100000000, 2),
         '最新价': round(close, 2),
         'MA5': round(ma5, 2),
@@ -215,8 +277,8 @@ def analyze_stock(code, info):
         '量比(近5日)': round(vol_ratio, 2),
         '当前涨跌幅': f'{change_pct:+.2f}%',
         '3日涨跌幅': f'{change_3d:+.2f}%',
+        '20日涨跌幅': f'{change_20d:+.2f}%',
         '技术评分': tech_score,
-        '综合评分': round(total_score, 1),
         '板块': board,
         '所属行业': info.get('industry', '')
     }
@@ -233,6 +295,10 @@ def main():
     print("  5. 股价站稳5/10/20日均线 & 均线多头")
     print("  6. 换手率合理区间 (5%-10%)")
     print("  7. 成交量放量")
+    print("  8. 20日涨幅 ≤ 35%（防追高）")
+    print("")
+    print("评分权重：")
+    print("  涨停次数×10 + 量比×10 + 技术评分 + 首板新鲜度 + 连板加成 + 板块共振 - 过热惩罚")
     print("=" * 70)
     
     trade_dates = get_trade_dates(25)
@@ -261,15 +327,29 @@ def main():
     if not results:
         print("\n⚠️ 未找到符合条件的股票")
         return
-    
+
+    # 板块热度加分：同行业 >= 3 只入选 +10，≥2 只 +5
+    industry_counter = {}
+    for r in results:
+        ind = r.get('所属行业', '')
+        if ind:
+            industry_counter[ind] = industry_counter.get(ind, 0) + 1
+    for r in results:
+        ind = r.get('所属行业', '')
+        n = industry_counter.get(ind, 0)
+        bonus = 10 if n >= 3 else (5 if n >= 2 else 0)
+        r['板块热度加分'] = bonus
+        r['综合评分'] = round(r['综合评分'] + bonus, 1)
+
     df_results = pd.DataFrame(results)
     df_results = df_results.sort_values('综合评分', ascending=False)
-    
+
     print(f"\n✅ 筛选完成！找到 {len(df_results)} 只短线强势股")
-    print("=" * 130)
-    
-    display_cols = ['代码', '名称', '涨停次数(近20日)', '流通市值(亿)', '最新价', '当前涨跌幅', 'MA5', 'MA10', 'MA20',
-                    '换手率', '量比(近5日)', '3日涨跌幅', '综合评分', '板块', '所属行业']
+    print("=" * 140)
+
+    display_cols = ['代码', '名称', '涨停次数(近20日)', '连板天数', '首次涨停距今(天)',
+                    '流通市值(亿)', '最新价', '当前涨跌幅', '量比(近5日)',
+                    '3日涨跌幅', '20日涨跌幅', '板块热度加分', '综合评分', '所属行业']
     print(df_results[display_cols].head(50).to_string(index=False))
     
     timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M')
