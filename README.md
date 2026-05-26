@@ -1,6 +1,6 @@
 # Short-Term Stock Picker (短线强势股筛选工具)
 
-[![GitHub stars](https://img.shields.io/github/stars/online0001/skills?style=social)](https://github.com/online0001/skills)
+[![GitHub stars](https://img.shields.io/github/stars/online0001/skills?style=social)](https://github.com/LUCAScoming/short-term-stock-picker)
 [![Python](https://img.shields.io/badge/Python-3.7+-blue.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
@@ -75,7 +75,7 @@ Total Score = Limit-Up Count × 20 + Technical Score + Volume Ratio × 5
 ### Installation
 
 ```bash
-git clone https://github.com/online0001/skills.git
+git clone https://github.com/LUCAScoming/short-term-stock-picker.git
 cd skills/short-term-stock-picker
 pip install akshare pandas
 python3 scripts/pick_stocks.py
@@ -193,7 +193,7 @@ This tool is for **educational and research purposes only**. Stock trading invol
 
 ```bash
 # 克隆仓库
-git clone https://github.com/online0001/skills.git
+git clone https://github.com/LUCAScoming/short-term-stock-picker.git
 cd skills/short-term-stock-picker
 
 # 安装依赖
@@ -256,4 +256,4 @@ python >= 3.7
 
 *Made with ❤️ for A-share investors | 专为A股投资者打造*
 
-**GitHub**: https://github.com/online0001/skills
+**GitHub**: https://github.com/LUCAScoming/short-term-stock-picker

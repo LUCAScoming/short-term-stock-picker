@@ -3,12 +3,67 @@
 短线选股脚本 - 技术面+资金面综合筛选 (优化版)
 """
 
+import sys
+import io
+
+if sys.platform == 'win32':
+    sys.stdout.reconfigure(encoding='utf-8')
+    sys.stderr.reconfigure(encoding='utf-8')
+
 import akshare as ak
 import pandas as pd
 from datetime import datetime, timedelta
 import time
+import json as _json
+import urllib.request as _urllib_req
+import urllib.parse as _urllib_parse
+import random as _random
 
-MARKET_CAP_THRESHOLD = 15000000000  # 元
+
+# ---- monkey-patch: 用 urllib 替代 requests (绕过本机代理问题) ----
+class _UrllibResponse:
+    def __init__(self, resp):
+        self._resp = resp
+        self._body = resp.read()
+        self.status_code = resp.getcode()
+        self.text = self._body.decode('utf-8', errors='replace')
+
+    def json(self):
+        return _json.loads(self.text)
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise Exception(f'HTTP {self.status_code}')
+
+
+def _patched_request_with_retry(url, params=None, timeout=15,
+                                max_retries=3, base_delay=1.0,
+                                random_delay_range=(0.5, 1.5)):
+    qs = _urllib_parse.urlencode(params) if params else ''
+    full_url = f"{url}?{qs}" if qs else url
+    last_exc = None
+    for attempt in range(max_retries):
+        try:
+            req = _urllib_req.Request(full_url, headers={
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            })
+            with _urllib_req.urlopen(req, timeout=timeout) as resp:
+                return _UrllibResponse(resp)
+        except Exception as e:
+            last_exc = e
+            if attempt < max_retries - 1:
+                time.sleep(base_delay * (2 ** attempt) + _random.uniform(*random_delay_range))
+    raise last_exc
+
+
+# 替换 akshare 内部所有引用点
+import akshare.utils.func  # noqa: E402
+akshare.utils.func.request_with_retry = _patched_request_with_retry
+akshare.utils.request.request_with_retry = _patched_request_with_retry
+# ---- end monkey-patch ----
+
+MARKET_CAP_MIN = 5000000000   # 50亿
+MARKET_CAP_MAX = 20000000000  # 200亿
 
 def get_trade_dates(n=25):
     dates = []
@@ -89,7 +144,7 @@ def analyze_stock(code, info):
     
     # 市值过滤
     market_cap = info.get('market_cap', 0)
-    if market_cap == 0 or market_cap > MARKET_CAP_THRESHOLD:
+    if market_cap == 0 or market_cap < MARKET_CAP_MIN or market_cap > MARKET_CAP_MAX:
         return None
     
     # 获取历史数据
@@ -116,12 +171,16 @@ def analyze_stock(code, info):
     
     # 换手率
     turnover_rate = df_hist.tail(3)['turnover'].mean() * 100
-    if turnover_rate > 10 or turnover_rate < 0.5:
+    if turnover_rate > 10 or turnover_rate < 5:
         return None
     
-    # 3日涨跌
+    # 当前涨跌幅
+    prev_close = df_hist.iloc[-2]['close']
+    change_pct = (close - prev_close) / prev_close * 100 if prev_close > 0 else 0
+
+    # 3日涨跌幅
     recent3 = df_hist.tail(3)
-    price_up_3d = recent3.iloc[-1]['close'] > recent3.iloc[0]['close']
+    change_3d = (recent3.iloc[-1]['close'] - recent3.iloc[0]['close']) / recent3.iloc[0]['close'] * 100
     
     # 技术评分
     tech_score = 20 + 10  # 均线多头基础分
@@ -132,7 +191,7 @@ def analyze_stock(code, info):
     else:
         tech_score += 5
     
-    if price_up_3d and vol_ratio >= 1.2:
+    if change_3d > 0 and vol_ratio >= 1.2:
         tech_score += 10
     
     if 2 <= turnover_rate <= 8:
@@ -154,7 +213,8 @@ def analyze_stock(code, info):
         'MA20': round(ma20, 2),
         '换手率': round(turnover_rate, 2),
         '量比(近5日)': round(vol_ratio, 2),
-        '3日涨跌': '↑' if price_up_3d else '↓',
+        '当前涨跌幅': f'{change_pct:+.2f}%',
+        '3日涨跌幅': f'{change_3d:+.2f}%',
         '技术评分': tech_score,
         '综合评分': round(total_score, 1),
         '板块': board,
@@ -168,10 +228,10 @@ def main():
     print("筛选条件：")
     print("  1. A股/深证/创业板/科创板")
     print("  2. 剔除ST及退市类")
-    print("  3. 总市值 ≤ 150亿")
+    print("  3. 市值 50亿-200亿")
     print("  4. 近20交易日有涨停")
     print("  5. 股价站稳5/10/20日均线 & 均线多头")
-    print("  6. 换手率合理区间 (0.5%-10%)")
+    print("  6. 换手率合理区间 (5%-10%)")
     print("  7. 成交量放量")
     print("=" * 70)
     
@@ -208,11 +268,12 @@ def main():
     print(f"\n✅ 筛选完成！找到 {len(df_results)} 只短线强势股")
     print("=" * 130)
     
-    display_cols = ['代码', '名称', '涨停次数(近20日)', '流通市值(亿)', '最新价', 'MA5', 'MA10', 'MA20', 
-                    '换手率', '量比(近5日)', '3日涨跌', '综合评分', '板块', '所属行业']
+    display_cols = ['代码', '名称', '涨停次数(近20日)', '流通市值(亿)', '最新价', '当前涨跌幅', 'MA5', 'MA10', 'MA20',
+                    '换手率', '量比(近5日)', '3日涨跌幅', '综合评分', '板块', '所属行业']
     print(df_results[display_cols].head(50).to_string(index=False))
     
-    output_path = '/Users/lulei/.openclaw/workspace/skills/short-term-stock-picker/result.csv'
+    timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M')
+    output_path = f'{timestamp}-result.csv'
     df_results.to_csv(output_path, index=False, encoding='utf-8-sig')
     print(f"\n📁 结果已保存到: {output_path}")
 
