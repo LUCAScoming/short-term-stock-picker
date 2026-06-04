@@ -21,6 +21,7 @@ python server.py                # 启动 Web UI
 ## 注意事项
 
 - commit message 使用中文
+- 选股结果的 CSV 文件（`*-result*.csv`）需要一并提交到仓库
 - Windows 终端编码问题：用 `sys.stdout.reconfigure(encoding='utf-8')`，不要用 `io.TextIOWrapper` 包裹（会造成双重缓冲）
 - 本机 requests 库无法直连东方财富 push 服务器，需要 monkey-patch 替换为 urllib.request（见 `pick_stocks.py` 头部）
 - 所有 `print` 用英文/数字，避免 emoji 在 subprocess 中 GBK 报错；如果要用 emoji，确保已 reconfigure stdout

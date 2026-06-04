@@ -4,6 +4,3 @@ __pycache__/
 
 # model cache
 .cache/
-
-# CSV output
-*-result*.csv
