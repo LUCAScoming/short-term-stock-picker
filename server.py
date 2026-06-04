@@ -35,6 +35,15 @@ _state = {
     'output_lines': [],
     'csv_filename': '',
 }
+_prob_state = {
+    'proc': None,
+    'status': 'idle',       # idle | running | done | error
+    'message': '',
+    'percent': 0,
+    'output_lines': [],
+    'phase': '',            # collect | train | predict
+    'csv_filename': '',     # output _prob.csv name
+}
 _lock = threading.Lock()
 
 
@@ -115,6 +124,83 @@ def _run_script():
             _state['proc'] = None
 
 
+def _run_board_prob(csv_filename):
+    """后台运行 board_prob.py"""
+    try:
+        _bump_prob(0, '启动涨停概率预估...', 'collect')
+
+        env = os.environ.copy()
+        env['PYTHONIOENCODING'] = 'utf-8'
+        env['PYTHONUNBUFFERED'] = '1'
+        csv_path = os.path.join(ROOT, csv_filename)
+        proc = subprocess.Popen(
+            [sys.executable, os.path.join(SCRIPTS_DIR, 'board_prob.py'), csv_path],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding='utf-8',
+            errors='replace',
+            cwd=ROOT,
+            env=env,
+        )
+        with _lock:
+            _prob_state['proc'] = proc
+
+        for line in proc.stdout:
+            line = line.strip()
+            if not line:
+                continue
+            with _lock:
+                _prob_state['output_lines'].append(line)
+
+            # 解析 [PROGRESS] collect:50:30/120
+            m = re.match(r'\[PROGRESS\]\s+(\w+):(\d+):(.*)', line)
+            if m:
+                phase = m.group(1)
+                pct = int(m.group(2))
+                msg = m.group(3)
+                if phase == 'collect':
+                    overall = int(pct * 0.50)   # 0-50%
+                elif phase == 'train':
+                    overall = 50 + int(pct * 0.12)  # 50-62%
+                elif phase == 'predict':
+                    overall = 62 + int(pct * 0.38)  # 62-100%
+                else:
+                    overall = pct
+                _bump_prob(overall, msg, phase)
+
+        proc.wait()
+        if proc.returncode == 0:
+            with _lock:
+                _prob_state['status'] = 'done'
+                # 推断输出文件名: stem_prob.csv
+                stem = os.path.splitext(csv_filename)[0]
+                prob_csv = stem + '_prob.csv'
+                if os.path.exists(os.path.join(ROOT, prob_csv)):
+                    _prob_state['csv_filename'] = prob_csv
+            _bump_prob(100, '涨停概率预估完成', 'done')
+        else:
+            _bump_prob(0, f'脚本异常退出 (code={proc.returncode})', 'error')
+            with _lock:
+                _prob_state['status'] = 'error'
+
+    except Exception as e:
+        _bump_prob(0, f'运行失败: {e}', 'error')
+        with _lock:
+            _prob_state['status'] = 'error'
+    finally:
+        with _lock:
+            _prob_state['proc'] = None
+
+
+def _bump_prob(percent, message, phase=''):
+    with _lock:
+        _prob_state['percent'] = percent
+        _prob_state['message'] = message
+        if phase:
+            _prob_state['phase'] = phase
+
+
 # ---- HTTP Handler ----
 class Handler(BaseHTTPRequestHandler):
 
@@ -161,9 +247,19 @@ class Handler(BaseHTTPRequestHandler):
                     'output_lines': _state['output_lines'][-50:],
                     'csv_filename': _state['csv_filename'],
                 })
+        elif p.path == '/api/prob-progress':
+            with _lock:
+                self._send_json({
+                    'status': _prob_state['status'],
+                    'percent': _prob_state['percent'],
+                    'message': _prob_state['message'],
+                    'phase': _prob_state['phase'],
+                    'output_lines': _prob_state['output_lines'][-30:],
+                    'csv_filename': _prob_state['csv_filename'],
+                })
         elif p.path == '/api/history':
             files = []
-            for f in glob.glob(os.path.join(ROOT, '*-result.csv')):
+            for f in glob.glob(os.path.join(ROOT, '*-result*.csv')):
                 st = os.stat(f)
                 files.append({
                     'name': os.path.basename(f),
@@ -208,6 +304,29 @@ class Handler(BaseHTTPRequestHandler):
                 _state['csv_filename'] = ''
 
             threading.Thread(target=_run_script, daemon=True).start()
+            self._send_json({'status': 'started'})
+        elif p.path == '/api/board-prob':
+            with _lock:
+                if _prob_state['status'] == 'running':
+                    self._send_json({'error': '涨停概率预估正在运行中'}, 409)
+                    return
+                _prob_state['status'] = 'running'
+                _prob_state['percent'] = 0
+                _prob_state['message'] = ''
+                _prob_state['output_lines'] = []
+                _prob_state['phase'] = ''
+                _prob_state['csv_filename'] = ''
+
+            cl = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(cl)) if cl > 0 else {}
+            csv_name = body.get('csv', '')
+            if not csv_name:
+                self._send_json({'error': 'missing csv param'}, 400)
+                with _lock:
+                    _prob_state['status'] = 'idle'
+                return
+
+            threading.Thread(target=_run_board_prob, args=(csv_name,), daemon=True).start()
             self._send_json({'status': 'started'})
         else:
             self._send_json({'error': 'not found'}, 404)
@@ -482,7 +601,22 @@ tbody tr:hover{background:rgba(255,255,255,.03);}
 
 <!-- Center Panel -->
 <div class="panel" id="center-panel">
-  <div class="panel-header" id="table-title">数据预览</div>
+  <div class="panel-header" style="display:flex;align-items:center;justify-content:space-between;text-transform:none;">
+    <span id="table-title">数据预览</span>
+    <div id="prob-actions" style="display:none;align-items:center;gap:10px;">
+      <button id="btn-prob" onclick="runProb()" style="
+        padding:5px 12px;border:1px solid var(--accent);border-radius:var(--radius);
+        background:transparent;color:var(--accent);font-size:12px;cursor:pointer;
+        font-weight:500;white-space:nowrap;transition:all .15s;
+      " onmouseover="this.style.background='rgba(240,180,41,.1)'" onmouseout="this.style.background='transparent'">
+        📊 涨停概率预估
+      </button>
+      <span id="prob-progress-text" style="font-size:11px;color:var(--text-dim);white-space:nowrap;"></span>
+      <div id="prob-bar-wrap" style="display:none;width:80px;height:4px;background:var(--border);border-radius:2px;overflow:hidden;">
+        <div id="prob-bar-fill" style="height:100%;background:var(--accent);width:0%;transition:width .3s;"></div>
+      </div>
+    </div>
+  </div>
   <div class="panel-body" style="padding:0;">
     <div id="table-wrap">
       <div class="empty-state" id="center-empty">← 点击历史记录中的 CSV 文件查看数据</div>
@@ -516,6 +650,8 @@ const $ = (s) => document.querySelector(s);
 const $$ = (s) => document.querySelectorAll(s);
 
 let pollTimer = null;
+let probPollTimer = null;
+let currentCsv = null;
 
 loadHistory();
 
@@ -601,8 +737,17 @@ async function loadHistory(){
 
 // ---- CSV Data ----
 async function loadCsv(filename){
+  currentCsv = filename;
   $('#table-title').textContent = '📋 ' + filename;
   $('#center-empty').style.display = 'none';
+  // Show prob button only for regular result CSVs (not _prob.csv)
+  const isProbCsv = filename.includes('_prob.csv');
+  $('#prob-actions').style.display = isProbCsv ? 'none' : 'flex';
+  // Reset prob UI
+  $('#btn-prob').disabled = false;
+  $('#btn-prob').textContent = '📊 涨停概率预估';
+  $('#prob-progress-text').textContent = '';
+  $('#prob-bar-wrap').style.display = 'none';
   try {
     const r = await fetch('/api/csv/' + encodeURIComponent(filename));
     const data = await r.json();
@@ -640,6 +785,67 @@ function renderTable(cols, rows){
 }
 
 function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+// ---- Prob Script ----
+async function runProb(){
+  if (!currentCsv) return;
+  const btn = $('#btn-prob');
+  btn.disabled = true;
+  btn.textContent = '⏳ 启动中...';
+  $('#prob-progress-text').textContent = '';
+  $('#prob-bar-wrap').style.display = 'none';
+  try {
+    const r = await fetch('/api/board-prob', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({csv: currentCsv})
+    });
+    if (!r.ok){ alert('涨停概率预估已在运行中'); btn.disabled = false; btn.textContent = '📊 涨停概率预估'; return; }
+    startProbPolling();
+  } catch(e){
+    btn.disabled = false;
+    btn.textContent = '📊 涨停概率预估';
+  }
+}
+
+function startProbPolling(){
+  if (probPollTimer) clearInterval(probPollTimer);
+  probPollTimer = setInterval(pollProbProgress, 600);
+}
+
+function stopProbPolling(){
+  if (probPollTimer){ clearInterval(probPollTimer); probPollTimer = null; }
+}
+
+async function pollProbProgress(){
+  try {
+    const r = await fetch('/api/prob-progress');
+    const s = await r.json();
+    $('#prob-bar-wrap').style.display = 'block';
+    $('#prob-bar-fill').style.width = s.percent + '%';
+    $('#prob-progress-text').textContent = s.percent + '% ' + s.message;
+    const btn = $('#btn-prob');
+    if (s.status === 'running'){
+      btn.textContent = '⏹ 预估中...';
+      btn.disabled = true;
+    } else {
+      stopProbPolling();
+      btn.textContent = '📊 涨停概率预估';
+      btn.disabled = false;
+      if (s.status === 'done' && s.csv_filename){
+        $('#prob-progress-text').textContent = '✅ 完成';
+        // Auto-load the _prob.csv
+        setTimeout(() => {
+          loadCsv(s.csv_filename);
+          loadHistory();
+        }, 500);
+      } else if (s.status === 'error'){
+        $('#prob-progress-text').textContent = '❌ ' + s.message;
+        $('#prob-bar-wrap').style.display = 'none';
+      }
+    }
+  } catch(e){}
+}
 
 // ---- Modal / 弹窗 ----
 function openStockModal(code, name){

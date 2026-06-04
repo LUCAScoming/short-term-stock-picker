@@ -1,3 +1,9 @@
 # python
 __pycache__/
 *.pyc
+
+# model cache
+.cache/
+
+# CSV output
+*-result*.csv
