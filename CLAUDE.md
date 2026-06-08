@@ -6,6 +6,7 @@
 
 ```
 scripts/pick_stocks.py   # 核心选股脚本（涨停+技术面+资金面）
+scripts/board_prob.py    # 二进三涨停概率预估（Logistic 回归）
 scripts/hot_sectors.py   # 热门放量板块筛选
 server.py                # Web 管理界面（http://localhost:8080）
 ```
@@ -20,6 +21,7 @@ python server.py                # 启动 Web UI
 
 ## 注意事项
 
+- 所有问题用中文回答
 - commit message 使用中文
 - 选股结果的 CSV 文件（`*-result*.csv`）需要一并提交到仓库
 - Windows 终端编码问题：用 `sys.stdout.reconfigure(encoding='utf-8')`，不要用 `io.TextIOWrapper` 包裹（会造成双重缓冲）
