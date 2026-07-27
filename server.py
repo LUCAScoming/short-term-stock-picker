@@ -54,15 +54,19 @@ def _bump(percent, message):
         _state['output_lines'].append(message)
 
 
-def _run_script():
+def _run_script(model='original'):
     try:
         _bump(1, '启动脚本...')
+
+        cmd = [sys.executable, os.path.join(SCRIPTS_DIR, 'pick_stocks.py')]
+        if model == '3d':
+            cmd.append('--model=3d')
 
         env = os.environ.copy()
         env['PYTHONIOENCODING'] = 'utf-8'
         env['PYTHONUNBUFFERED'] = '1'
         proc = subprocess.Popen(
-            [sys.executable, os.path.join(SCRIPTS_DIR, 'pick_stocks.py')],
+            cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -100,7 +104,7 @@ def _run_script():
                 _bump(93, line)
             elif '结果已保存到' in line:
                 _bump(97, line)
-                m = re.search(r'[\w\-]+\.csv', line)
+                m = re.search(r'[\w\-]+(?:_3Model)?-result\.csv', line)
                 if m:
                     with _lock:
                         _state['csv_filename'] = m.group(0)
@@ -303,7 +307,10 @@ class Handler(BaseHTTPRequestHandler):
                 _state['output_lines'] = []
                 _state['csv_filename'] = ''
 
-            threading.Thread(target=_run_script, daemon=True).start()
+            cl = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(cl)) if cl > 0 else {}
+            model = body.get('model', 'original')
+            threading.Thread(target=_run_script, args=(model,), daemon=True).start()
             self._send_json({'status': 'started'})
         elif p.path == '/api/board-prob':
             with _lock:
@@ -588,7 +595,7 @@ tbody tr:hover{background:rgba(255,255,255,.03);}
 <div class="panel" id="left-panel">
   <div class="panel-header">控制面板</div>
   <div class="panel-body">
-    <button id="btn-run" onclick="runScript()">▶ 开始筛选</button>
+    <button id="btn-run" onclick="showModelDialog()">▶ 开始筛选</button>
     <div id="progress-wrap">
       <div id="progress-bar"><div id="progress-fill"></div></div>
       <div id="progress-text">就绪</div>
@@ -628,6 +635,32 @@ tbody tr:hover{background:rgba(255,255,255,.03);}
 </div>
 
 <!-- Modal Overlay -->
+<!-- Model Selection Dialog -->
+<div id="model-dialog-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:2000;align-items:center;justify-content:center;">
+  <div id="model-dialog" style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:24px 28px;min-width:340px;" onclick="event.stopPropagation()">
+    <h3 style="font-size:15px;color:var(--text);margin:0 0 8px 0;">选择评分体系</h3>
+    <p style="font-size:12px;color:var(--text-dim);margin:0 0 16px 0;">请选择本次筛选使用的评分模型</p>
+    <label style="display:flex;align-items:center;padding:10px 12px;border:1px solid var(--border);border-radius:8px;margin-bottom:8px;cursor:pointer;transition:all .15s;" id="label-original" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor=document.getElementById('model-original').checked?'var(--accent)':'var(--border)'">
+      <input type="radio" name="model-choice" value="original" id="model-original" checked style="accent-color:var(--accent);margin-right:10px;" onchange="updateModelLabel()">
+      <div>
+        <div style="font-size:13px;color:var(--text);font-weight:500;">原始评分体系</div>
+        <div style="font-size:11px;color:var(--text-dim);margin-top:2px;">涨停次数 + 量比 + 板块共振（推荐）</div>
+      </div>
+    </label>
+    <label style="display:flex;align-items:center;padding:10px 12px;border:1px solid var(--border);border-radius:8px;margin-bottom:16px;cursor:pointer;transition:all .15s;" id="label-3d" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor=document.getElementById('model-3d').checked?'var(--accent)':'var(--border)'">
+      <input type="radio" name="model-choice" value="3d" id="model-3d" style="accent-color:var(--accent);margin-right:10px;" onchange="updateModelLabel()">
+      <div>
+        <div style="font-size:13px;color:var(--text);font-weight:500;">三维度模型</div>
+        <div style="font-size:11px;color:var(--text-dim);margin-top:2px;">涨停集中度 + 龙头高度 + 趋势加速度</div>
+      </div>
+    </label>
+    <div style="display:flex;gap:8px;justify-content:flex-end;">
+      <button onclick="cancelModelDialog()" style="padding:7px 16px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text-dim);font-size:13px;cursor:pointer;">取消</button>
+      <button onclick="confirmModel()" style="padding:7px 16px;border:none;border-radius:6px;background:var(--accent);color:#0d1117;font-size:13px;font-weight:600;cursor:pointer;">确认筛选</button>
+    </div>
+  </div>
+</div>
+
 <div id="modal-overlay" onclick="closeModal(event)">
   <div id="modal-box" onclick="event.stopPropagation()">
     <div id="modal-header">
@@ -656,14 +689,52 @@ let currentCsv = null;
 loadHistory();
 
 // ---- Script Control ----
-async function runScript(){
+function showModelDialog(){
+  $('#model-dialog-overlay').style.display = 'flex';
+  $('#model-original').checked = true;
+  updateModelLabel();
+}
+
+function updateModelLabel(){
+  const selected = document.querySelector('input[name="model-choice"]:checked').value;
+  document.getElementById('label-original').style.borderColor = selected === 'original' ? 'var(--accent)' : 'var(--border)';
+  document.getElementById('label-3d').style.borderColor = selected === '3d' ? 'var(--accent)' : 'var(--border)';
+}
+
+function cancelModelDialog(){
+  $('#model-dialog-overlay').style.display = 'none';
+}
+
+async function confirmModel(){
+  $('#model-dialog-overlay').style.display = 'none';
+  const model = document.querySelector('input[name="model-choice"]:checked').value;
+  await runScript(model);
+}
+
+async function runScript(model){
   const btn = $('#btn-run');
   btn.disabled = true;
   btn.textContent = '⏳ 启动中...';
   btn.classList.add('running');
   try {
-    const r = await fetch('/api/run', {method:'POST'});
-    if (!r.ok){ alert('脚本已在运行中'); btn.disabled=false; btn.textContent='▶ 开始筛选'; btn.classList.remove('running'); return; }
+    const r = await fetch('/api/run', {
+      method:'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({model: model})
+    });
+    if (!r.ok){
+      // 已有脚本在运行，直接开始轮询显示当前进度
+      const err = await r.json();
+      if (err.error && err.error.includes('运行中')){
+        startPolling();
+        return;
+      }
+      alert(err.error || '启动失败');
+      btn.disabled=false;
+      btn.textContent='▶ 开始筛选';
+      btn.classList.remove('running');
+      return;
+    }
     startPolling();
   } catch(e){
     btn.disabled = false;

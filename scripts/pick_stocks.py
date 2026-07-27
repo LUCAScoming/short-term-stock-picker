@@ -12,6 +12,8 @@ import urllib.request as _urllib_req
 import urllib.parse as _urllib_parse
 from datetime import datetime, timedelta
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
+import argparse
 
 if sys.platform == 'win32':
     sys.stdout.reconfigure(encoding='utf-8')
@@ -141,22 +143,27 @@ def get_all_limit_up_stocks(trade_dates):
     return all_data
 
 def get_stock_hist_data(code):
-    """获取股票历史数据"""
+    """获取股票历史数据，10秒超时防止单票卡死"""
     try:
         if code.startswith(('600', '601', '603', '605', '688')):
             symbol = f'sh{code}'
         else:
             symbol = f'sz{code}'
-        
+
         end_date = (datetime.now() + timedelta(days=1)).strftime('%Y%m%d')
         start_date = (datetime.now() - timedelta(days=40)).strftime('%Y%m%d')
-        
-        df = ak.stock_zh_a_daily(symbol=symbol, start_date=start_date, end_date=end_date)
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(
+                ak.stock_zh_a_daily,
+                symbol=symbol, start_date=start_date, end_date=end_date
+            )
+            df = future.result(timeout=10)
         if df is None or len(df) < 20:
             return None
-        
+
         return df.tail(25)
-    except:
+    except (FutureTimeout, Exception):
         return None
 
 def analyze_stock(code, info):
@@ -286,6 +293,12 @@ def analyze_stock(code, info):
     }
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--model', choices=['original', '3d'], default='original',
+                        help='scoring model: original (default) or 3d (3-dimension)')
+    args = parser.parse_args()
+    use_3d = args.model == '3d'
+
     print("=" * 70)
     print("📈 短线强势股筛选 (技术面+资金面综合)")
     print("=" * 70)
@@ -299,9 +312,13 @@ def main():
     print("  7. 成交量放量")
     print("  8. 20日涨幅 ≤ 35%（防追高）")
     print("")
-    print("评分权重：")
-    print("  涨停次数×10 + 量比×10 + 技术评分 + 首板新鲜度 + 连板加成 + 板块热度(0-30) - 过热惩罚")
-    print("板块热度 = 涨停占比(0-15) + 龙头高度(0-10) + 趋势加速度(0-5)")
+    if use_3d:
+        print("评分权重：")
+        print("  涨停次数×10 + 量比×10 + 技术评分 + 首板新鲜度 + 连板加成 + 板块热度(0-30) - 过热惩罚")
+        print("板块热度 = 涨停集中度(0-15) + 龙头高度(0-10) + 趋势加速度(0-5)")
+    else:
+        print("评分权重：")
+        print("  涨停次数×10 + 量比×10 + 技术评分 + 首板新鲜度 + 连板加成 + 板块共振 - 过热惩罚")
     print("=" * 70)
     
     trade_dates = get_trade_dates(25)
@@ -322,7 +339,7 @@ def main():
             results.append(result)
             print(f"  ✅ {code} {info['name']} - 评分: {result['综合评分']}")
         
-        if analyzed % 50 == 0:
+        if analyzed % 20 == 0:
             print(f"  已分析 {analyzed}/{len(all_stocks)} 只... 符合条件: {len(results)}")
         
         time.sleep(0.25)  # 避免请求过快
@@ -331,72 +348,82 @@ def main():
         print("\n⚠️ 未找到符合条件的股票")
         return
 
-    # ---- 板块热度评价（三维度：涨停集中度 + 龙头高度 + 趋势加速度）----
-    # 行业活跃股数 = 近20日出现过涨停的股票数，作为行业规模的代理指标
-    industry_universe = Counter()
-    for code, info in all_stocks.items():
-        ind = info.get('industry', '')
-        if ind:
-            industry_universe[ind] += 1
+    if use_3d:
+        # ---- 板块热度评价（三维度：涨停集中度 + 龙头高度 + 趋势加速度）----
+        # 行业活跃股数 = 近20日出现过涨停的股票数，作为行业规模的代理指标
+        industry_universe = Counter()
+        for code, info in all_stocks.items():
+            ind = info.get('industry', '')
+            if ind:
+                industry_universe[ind] += 1
 
-    recent3 = trade_dates[:3]  # 最近3个交易日
-    day_lu = {d: Counter() for d in recent3}  # date -> {industry: count}
-    leader_board = {}  # industry -> max consecutive boards
+        recent3 = trade_dates[:3]
+        day_lu = {d: Counter() for d in recent3}
+        leader_board = {}
 
-    for code, info in all_stocks.items():
-        ind = info.get('industry', '')
-        if not ind:
-            continue
-        for d in recent3:
-            if d in info['dates']:
-                day_lu[d][ind] += 1
-        if info['consecutive'] > leader_board.get(ind, 0):
-            leader_board[ind] = info['consecutive']
+        for code, info in all_stocks.items():
+            ind = info.get('industry', '')
+            if not ind:
+                continue
+            for d in recent3:
+                if d in info['dates']:
+                    day_lu[d][ind] += 1
+            if info['consecutive'] > leader_board.get(ind, 0):
+                leader_board[ind] = info['consecutive']
 
-    d0, d1, d2 = recent3[0], recent3[1], recent3[2]
+        d0, d1, d2 = recent3[0], recent3[1], recent3[2]
 
-    for r in results:
-        ind = r.get('所属行业', '')
-        bonus = 0
-        r['板块涨停比'] = '--'
-        r['板块趋势'] = '--'
+        for r in results:
+            ind = r.get('所属行业', '')
+            bonus = 0
+            r['板块涨停比'] = '--'
+            r['板块趋势'] = '--'
 
-        if ind:
-            # 维度1: 涨停占比 (0-15分)
-            lu_today = day_lu[d0].get(ind, 0)
-            total_active = industry_universe.get(ind, 1)
-            if lu_today > 0:
-                concentration = lu_today / max(total_active, 1)
-                # 50% 集中度 = 满分，线性缩放
-                ratio_score = round(min(15, concentration * 30))
-                r['板块涨停比'] = f'{lu_today}/{total_active}'
-            else:
-                ratio_score = 0
+            if ind:
+                lu_today = day_lu[d0].get(ind, 0)
+                total_active = industry_universe.get(ind, 1)
+                if lu_today > 0:
+                    concentration = lu_today / max(total_active, 1)
+                    ratio_score = round(min(15, concentration * 30))
+                    r['板块涨停比'] = f'{lu_today}/{total_active}'
+                else:
+                    ratio_score = 0
 
-            # 维度2: 龙头高度溢价 (0-10分)
-            leader = leader_board.get(ind, 1)
-            leader_score = min(10, max(0, leader - 1) * 3)
+                leader = leader_board.get(ind, 1)
+                leader_score = min(10, max(0, leader - 1) * 3)
 
-            # 维度3: 趋势加速度 (0-5分)
-            c0 = day_lu[d0].get(ind, 0)
-            c1 = day_lu[d1].get(ind, 0)
-            c2 = day_lu[d2].get(ind, 0)
-            if c0 >= c1 >= c2 and c0 > 0:
-                trend_score = min(5, (c0 - c2) * 2)
-                r['板块趋势'] = '↑加速'
-            elif c0 > 0 and c0 >= c1:
-                trend_score = 2
-                r['板块趋势'] = '→平稳'
-            elif c0 > 0:
-                trend_score = 0
-                r['板块趋势'] = '↓减速'
-            else:
-                trend_score = 0
+                c0 = day_lu[d0].get(ind, 0)
+                c1 = day_lu[d1].get(ind, 0)
+                c2 = day_lu[d2].get(ind, 0)
+                if c0 >= c1 >= c2 and c0 > 0:
+                    trend_score = min(5, (c0 - c2) * 2)
+                    r['板块趋势'] = '↑加速'
+                elif c0 > 0 and c0 >= c1:
+                    trend_score = 2
+                    r['板块趋势'] = '→平稳'
+                elif c0 > 0:
+                    trend_score = 0
+                    r['板块趋势'] = '↓减速'
+                else:
+                    trend_score = 0
 
-            bonus = ratio_score + leader_score + trend_score
+                bonus = ratio_score + leader_score + trend_score
 
-        r['板块热度加分'] = bonus
-        r['综合评分'] = round(r['综合评分'] + bonus, 1)
+            r['板块热度加分'] = bonus
+            r['综合评分'] = round(r['综合评分'] + bonus, 1)
+    else:
+        # 原始板块热度：同行业 >= 3 只入选 +10，>= 2 只 +5
+        industry_counter = {}
+        for r in results:
+            ind = r.get('所属行业', '')
+            if ind:
+                industry_counter[ind] = industry_counter.get(ind, 0) + 1
+        for r in results:
+            ind = r.get('所属行业', '')
+            n = industry_counter.get(ind, 0)
+            bonus = 10 if n >= 3 else (5 if n >= 2 else 0)
+            r['板块热度加分'] = bonus
+            r['综合评分'] = round(r['综合评分'] + bonus, 1)
 
     df_results = pd.DataFrame(results)
     df_results = df_results.sort_values('综合评分', ascending=False)
@@ -404,13 +431,19 @@ def main():
     print(f"\n✅ 筛选完成！找到 {len(df_results)} 只短线强势股")
     print("=" * 140)
 
-    display_cols = ['代码', '名称', '涨停次数(近20日)', '连板天数', '首次涨停距今(天)',
-                    '流通市值(亿)', '最新价', '当前涨跌幅', '量比(近5日)',
-                    '3日涨跌幅', '20日涨跌幅', '板块涨停比', '板块趋势', '板块热度加分', '综合评分', '所属行业']
+    if use_3d:
+        display_cols = ['代码', '名称', '涨停次数(近20日)', '连板天数', '首次涨停距今(天)',
+                        '流通市值(亿)', '最新价', '当前涨跌幅', '量比(近5日)',
+                        '3日涨跌幅', '20日涨跌幅', '板块涨停比', '板块趋势', '板块热度加分', '综合评分', '所属行业']
+    else:
+        display_cols = ['代码', '名称', '涨停次数(近20日)', '连板天数', '首次涨停距今(天)',
+                        '流通市值(亿)', '最新价', '当前涨跌幅', '量比(近5日)',
+                        '3日涨跌幅', '20日涨跌幅', '板块热度加分', '综合评分', '所属行业']
     print(df_results[display_cols].head(50).to_string(index=False))
     
     timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M')
-    output_path = f'{timestamp}-result.csv'
+    suffix = '_3Model' if use_3d else ''
+    output_path = f'{timestamp}-result{suffix}.csv'
     df_results.to_csv(output_path, index=False, encoding='utf-8-sig')
     print(f"\n📁 结果已保存到: {output_path}")
 
