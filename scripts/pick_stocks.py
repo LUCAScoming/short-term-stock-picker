@@ -139,6 +139,15 @@ def get_all_limit_up_stocks(trade_dates):
                     break
         info['consecutive'] = consecutive
 
+        # 涨停时间衰减得分：近期涨停权重高，远期指数衰减（问题8修复）
+        # recent20[0]=最近交易日，距今天数越大权重越低，0.9^days_ago
+        decay_factor = 0.9
+        decay_score = 0.0
+        for d in dates_set:
+            days_ago = recent20.index(d)
+            decay_score += (decay_factor ** days_ago) * 10
+        info['limit_up_decay_score'] = round(decay_score, 1)
+
     print(f"📈 近20日共有 {len(all_data)} 只股票涨停过")
     return all_data
 
@@ -196,9 +205,15 @@ def analyze_stock(code, info):
     ma10 = df_hist['close'].rolling(10).mean().iloc[-1]
     ma20 = df_hist['close'].rolling(20).mean().iloc[-1]
     
-    # 均线检测
-    if not (close >= ma5 and close >= ma10 and close >= ma20 and ma5 > ma10 > ma20):
-        return None
+    # 均线分级评分（问题11修复：替代刚性淘汰，保留破位淘汰）
+    if close >= ma5 and close >= ma10 and close >= ma20 and ma5 > ma10 > ma20:
+        ma_score = 30  # 完美多头
+    elif close >= ma10 and ma10 > ma20:
+        ma_score = 20  # 接近多头，回调买点
+    elif close >= ma20:
+        ma_score = 10  # 弱势站稳
+    else:
+        return None  # 跌破20日线，趋势破坏直接淘汰
     
     # 成交量分析
     vol_last5 = df_hist.tail(5)['volume'].mean()
@@ -231,37 +246,44 @@ def analyze_stock(code, info):
     limit_up_count = info['count']
     first_days_ago = info.get('first_days_ago', 10)
     consecutive = info.get('consecutive', 0)
+    limit_up_decay_score = info.get('limit_up_decay_score', limit_up_count * 10)  # 问题8：时间衰减得分
 
-    # 技术评分（不变）
-    tech_score = 20 + 10  # 均线多头基础分
-    if vol_ratio >= 1.5:
-        tech_score += 15
-    elif vol_ratio >= 1.2:
-        tech_score += 10
-    else:
-        tech_score += 5
-
+    # 技术评分（问题1修复：去掉量比分档，量比仅在综合分 vol_ratio*10 计一次，避免双重计算）
+    tech_score = ma_score  # 均线分级基础分（问题11）
     if change_3d > 0 and vol_ratio >= 1.2:
-        tech_score += 10
+        tech_score += 10  # 量价齐升
 
-    if 2 <= turnover_rate <= 8:
+    # 换手率加分（问题2修复：与过滤区间5-10对齐，高位换手惩罚）
+    if 5 <= turnover_rate <= 8:
         tech_score += 5
+    elif 8 < turnover_rate <= 10:
+        tech_score -= 5  # 高位换手，出货嫌疑
 
-    # 首板新鲜度加分
-    recency_bonus = 0
-    if first_days_ago <= 3:
-        recency_bonus = 15
+    # 首板新鲜度加分（问题9修复：今日首板0天降权，1-3天回调买点最佳）
+    if first_days_ago == 0:
+        recency_bonus = 5   # 今日涨停，次日追高风险
+    elif first_days_ago <= 3:
+        recency_bonus = 15  # 1-3天，回调买点最佳
     elif first_days_ago <= 7:
         recency_bonus = 8
+    else:
+        recency_bonus = 0
 
-    # 连板加分
-    consecutive_bonus = max(0, (consecutive - 1)) * 10
+    # 连板加分（问题3修复：分段计分，≥4连板转惩罚，规避高位接盘）
+    if consecutive <= 1:
+        consecutive_bonus = 0
+    elif consecutive == 2:
+        consecutive_bonus = 10
+    elif consecutive == 3:
+        consecutive_bonus = 15
+    else:
+        consecutive_bonus = -15  # ≥4连板，高位风险
 
     # 过热惩罚（20日涨幅 25%-35% 之间）
     overheat_penalty = -10 if change_20d > 25 else 0
 
-    # 综合评分：涨停权重降为10，量比权重翻倍
-    total_score = (limit_up_count * 10
+    # 综合评分（问题8修复：涨停次数改用时间衰减得分，避免远期涨停等权）
+    total_score = (limit_up_decay_score
                    + tech_score
                    + vol_ratio * 10
                    + recency_bonus
@@ -275,6 +297,7 @@ def analyze_stock(code, info):
         '名称': name,
         '综合评分': round(total_score, 1),
         '涨停次数(近20日)': limit_up_count,
+        '涨停衰减得分': limit_up_decay_score,
         '连板天数': consecutive,
         '首次涨停距今(天)': first_days_ago,
         '流通市值(亿)': round(market_cap / 100000000, 2),
@@ -307,18 +330,20 @@ def main():
     print("  2. 剔除ST及退市类")
     print("  3. 市值 50亿-200亿")
     print("  4. 近20交易日有涨停")
-    print("  5. 股价站稳5/10/20日均线 & 均线多头")
+    print("  5. 均线分级评分(完美多头30/接近多头20/弱势10/破ma20淘汰)")
     print("  6. 换手率合理区间 (5%-10%)")
     print("  7. 成交量放量")
     print("  8. 20日涨幅 ≤ 35%（防追高）")
     print("")
     if use_3d:
         print("评分权重：")
-        print("  涨停次数×10 + 量比×10 + 技术评分 + 首板新鲜度 + 连板加成 + 板块热度(0-30) - 过热惩罚")
+        print("  涨停衰减得分(0.9^天数×10) + 量比×10 + 技术评分 + 首板新鲜度 + 连板分段 + 板块热度(0-30) - 过热惩罚")
+        print("连板分段: 2板+10/3板+15/≥4板-15 | 首板: 今日+5/1-3天+15/4-7天+8 | 换手: 5-8%+5/8-10%-5")
         print("板块热度 = 涨停集中度(0-15) + 龙头高度(0-10) + 趋势加速度(0-5)")
     else:
         print("评分权重：")
-        print("  涨停次数×10 + 量比×10 + 技术评分 + 首板新鲜度 + 连板加成 + 板块共振 - 过热惩罚")
+        print("  涨停衰减得分(0.9^天数×10) + 量比×10 + 技术评分 + 首板新鲜度 + 连板分段 + 板块共振 - 过热惩罚")
+        print("连板分段: 2板+10/3板+15/≥4板-15 | 首板: 今日+5/1-3天+15/4-7天+8 | 换手: 5-8%+5/8-10%-5")
     print("=" * 70)
     
     trade_dates = get_trade_dates(25)
@@ -432,11 +457,11 @@ def main():
     print("=" * 140)
 
     if use_3d:
-        display_cols = ['代码', '名称', '涨停次数(近20日)', '连板天数', '首次涨停距今(天)',
+        display_cols = ['代码', '名称', '涨停次数(近20日)', '涨停衰减得分', '连板天数', '首次涨停距今(天)',
                         '流通市值(亿)', '最新价', '当前涨跌幅', '量比(近5日)',
                         '3日涨跌幅', '20日涨跌幅', '板块涨停比', '板块趋势', '板块热度加分', '综合评分', '所属行业']
     else:
-        display_cols = ['代码', '名称', '涨停次数(近20日)', '连板天数', '首次涨停距今(天)',
+        display_cols = ['代码', '名称', '涨停次数(近20日)', '涨停衰减得分', '连板天数', '首次涨停距今(天)',
                         '流通市值(亿)', '最新价', '当前涨跌幅', '量比(近5日)',
                         '3日涨跌幅', '20日涨跌幅', '板块热度加分', '综合评分', '所属行业']
     print(df_results[display_cols].head(50).to_string(index=False))
