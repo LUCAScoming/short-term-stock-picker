@@ -65,6 +65,29 @@ akshare.utils.func.request_with_retry = _patched_request_with_retry
 akshare.utils.request.request_with_retry = _patched_request_with_retry
 # ---- end monkey-patch ----
 
+# ---- monkey-patch: 给 requests.get 注入默认超时 ----
+# akshare 的 stock_zh_a_daily / stock_zt_pool_em 内部直接 requests.get(url) 且不传 timeout，
+# 一旦网络慢/挂起会永久阻塞。这里给 get 补默认超时，避免脚本卡死。
+import requests as _requests
+
+_orig_requests_get = _requests.get
+_orig_session_get = _requests.Session.get
+
+
+def _patched_requests_get(url, params=None, **kwargs):
+    kwargs.setdefault('timeout', 15)
+    return _orig_requests_get(url, params=params, **kwargs)
+
+
+def _patched_session_get(self, url, **kwargs):
+    kwargs.setdefault('timeout', 15)
+    return _orig_session_get(self, url, **kwargs)
+
+
+_requests.get = _patched_requests_get
+_requests.Session.get = _patched_session_get
+# ---- end requests monkey-patch ----
+
 MARKET_CAP_MIN = 5000000000   # 50亿
 MARKET_CAP_MAX = 20000000000  # 200亿
 
@@ -162,12 +185,20 @@ def get_stock_hist_data(code):
         end_date = (datetime.now() + timedelta(days=1)).strftime('%Y%m%d')
         start_date = (datetime.now() - timedelta(days=40)).strftime('%Y%m%d')
 
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(
-                ak.stock_zh_a_daily,
-                symbol=symbol, start_date=start_date, end_date=end_date
-            )
+        executor = ThreadPoolExecutor(max_workers=1)
+        future = executor.submit(
+            ak.stock_zh_a_daily,
+            symbol=symbol, start_date=start_date, end_date=end_date
+        )
+        try:
             df = future.result(timeout=10)
+        except (FutureTimeout, Exception):
+            return None
+        finally:
+            # 关键：不能用 `with` 写法。with 退出时会 shutdown(wait=True)，
+            # 阻塞等待卡死的线程，导致超时失效。这里 wait=False 直接放弃等待。
+            executor.shutdown(wait=False)
+
         if df is None or len(df) < 20:
             return None
 

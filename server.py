@@ -58,13 +58,14 @@ def _run_script(model='original'):
     try:
         _bump(1, '启动脚本...')
 
-        cmd = [sys.executable, os.path.join(SCRIPTS_DIR, 'pick_stocks.py')]
+        cmd = [r'C:\Users\lucas\AppData\Local\Programs\Python\Python312\python.exe', os.path.join(SCRIPTS_DIR, 'pick_stocks.py')]
         if model == '3d':
             cmd.append('--model=3d')
 
         env = os.environ.copy()
         env['PYTHONIOENCODING'] = 'utf-8'
         env['PYTHONUNBUFFERED'] = '1'
+        env.pop('PYTHONHOME', None)  # 防止 PYTHONHOME 污染子进程(Python312 找不到 akshare)
         proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
@@ -136,9 +137,10 @@ def _run_board_prob(csv_filename):
         env = os.environ.copy()
         env['PYTHONIOENCODING'] = 'utf-8'
         env['PYTHONUNBUFFERED'] = '1'
+        env.pop('PYTHONHOME', None)  # 防止 PYTHONHOME 污染子进程
         csv_path = os.path.join(ROOT, csv_filename)
         proc = subprocess.Popen(
-            [sys.executable, os.path.join(SCRIPTS_DIR, 'board_prob.py'), csv_path],
+            [r'C:\Users\lucas\AppData\Local\Programs\Python\Python312\python.exe', os.path.join(SCRIPTS_DIR, 'board_prob.py'), csv_path],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
